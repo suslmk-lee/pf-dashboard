@@ -16,9 +16,16 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+const (
+	// Member 클러스터 Context 이름
+	Member1ContextName = "karmada-member1-ctx"
+	Member2ContextName = "karmada-member2-ctx"
+)
+
 // MultiClusterMonitor 멀티 클러스터 모니터링
 type MultiClusterMonitor struct {
 	clusterMonitor *ClusterMonitor
+	trafficMonitor *TrafficMonitor
 	eventLog       *eventlog.EventLog
 	memberClusters map[string]*kubernetes.Clientset
 	watchers       []chan []ClusterInfo
@@ -38,6 +45,9 @@ func NewMultiClusterMonitor(eventLog *eventlog.EventLog) *MultiClusterMonitor {
 	// 기본 ClusterMonitor 생성
 	mcm.clusterMonitor = NewClusterMonitor(eventLog)
 
+	// TrafficMonitor 생성
+	mcm.trafficMonitor = NewTrafficMonitor(mcm.memberClusters)
+
 	return mcm
 }
 
@@ -56,7 +66,7 @@ func (mcm *MultiClusterMonitor) initMemberClusters() {
 	}
 
 	// member-cluster1, member-cluster2 context 찾기
-	memberContexts := []string{"member-cluster1-ctx", "member-cluster2-ctx"}
+	memberContexts := []string{Member1ContextName, Member2ContextName}
 
 	for _, contextName := range memberContexts {
 		if _, exists := config.Contexts[contextName]; !exists {
@@ -98,11 +108,11 @@ func (mcm *MultiClusterMonitor) CheckClusters() []ClusterInfo {
 	}
 
 	// Member Cluster 1
-	member1Info := mcm.getClusterInfo("member-cluster1-ctx", "member1", "Member1 Cluster", namespace)
+	member1Info := mcm.getClusterInfo(Member1ContextName, "member1", "Member1 Cluster", namespace)
 	clusters = append(clusters, member1Info)
 
 	// Member Cluster 2
-	member2Info := mcm.getClusterInfo("member-cluster2-ctx", "member2", "Member2 Cluster", namespace)
+	member2Info := mcm.getClusterInfo(Member2ContextName, "member2", "Member2 Cluster", namespace)
 	clusters = append(clusters, member2Info)
 
 	return clusters
@@ -336,4 +346,9 @@ func (mcm *MultiClusterMonitor) NotifyWatchers(clusters []ClusterInfo) {
 			log.Printf("[NotifyWatchers] WARNING: Watcher %d buffer full, skipping", i)
 		}
 	}
+}
+
+// GetServiceGraph 서비스 그래프 조회 (TrafficMonitor 위임)
+func (mcm *MultiClusterMonitor) GetServiceGraph(deploymentName, namespace string) (*ServiceGraph, error) {
+	return mcm.trafficMonitor.GetServiceGraph(deploymentName, namespace)
 }

@@ -3,6 +3,7 @@ import GlobalStatus from './components/GlobalStatus';
 import TrafficFlow from './components/TrafficFlow';
 import ClusterCard from './components/ClusterCard';
 import EventLog from './components/EventLog';
+import TrafficTopology from './components/TrafficTopology';
 import websocketService from './services/websocket';
 
 /**
@@ -106,8 +107,11 @@ function App() {
 
       {/* 메인 컨테이너 */}
       <div className="max-w-7xl mx-auto px-4 py-8">
-        {/* GSLB 트래픽 흐름 시각화 */}
+        {/* GSLB 트래픽 흐름 시각화 (마우스 오버 시 상세 정보 표시) */}
         <TrafficFlow clusters={clusters} />
+
+        {/* 트래픽 토폴로지 (Istio Kiali 스타일) */}
+        <TrafficTopology deploymentName="frontend" namespace="iot-platform" />
 
         {/* 클러스터 카드 섹션 */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
