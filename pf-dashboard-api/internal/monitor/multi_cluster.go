@@ -30,6 +30,8 @@ type MultiClusterMonitor struct {
 	memberClusters map[string]*kubernetes.Clientset
 	watchers       []chan []ClusterInfo
 	mu             sync.RWMutex
+	lastStatus     map[string]string            // 이전 클러스터 상태 추적
+	lastNodeStatus map[string]map[string]string // 이전 노드 상태 추적 [clusterID][nodeName]status
 }
 
 // NewMultiClusterMonitor 새 멀티 클러스터 모니터 생성
@@ -37,6 +39,8 @@ func NewMultiClusterMonitor(eventLog *eventlog.EventLog) *MultiClusterMonitor {
 	mcm := &MultiClusterMonitor{
 		eventLog:       eventLog,
 		memberClusters: make(map[string]*kubernetes.Clientset),
+		lastStatus:     make(map[string]string),
+		lastNodeStatus: make(map[string]map[string]string),
 	}
 
 	// Member 클러스터 클라이언트 생성
@@ -110,12 +114,97 @@ func (mcm *MultiClusterMonitor) CheckClusters() []ClusterInfo {
 	// Member Cluster 1
 	member1Info := mcm.getClusterInfo(Member1ContextName, "member1", "Member1 Cluster", namespace)
 	clusters = append(clusters, member1Info)
+	mcm.checkNodeStatusChanges("member1", member1Info.Name, member1Info.Nodes)
+	mcm.checkStatusChange("member1", member1Info.Name, member1Info.Status, member1Info.Nodes)
 
 	// Member Cluster 2
 	member2Info := mcm.getClusterInfo(Member2ContextName, "member2", "Member2 Cluster", namespace)
 	clusters = append(clusters, member2Info)
+	mcm.checkNodeStatusChanges("member2", member2Info.Name, member2Info.Nodes)
+	mcm.checkStatusChange("member2", member2Info.Name, member2Info.Status, member2Info.Nodes)
 
 	return clusters
+}
+
+// checkStatusChange 클러스터 상태 변화 감지 및 이벤트 생성
+func (mcm *MultiClusterMonitor) checkStatusChange(clusterID, clusterName, currentStatus string, nodes []NodeInfo) {
+	mcm.mu.Lock()
+	defer mcm.mu.Unlock()
+
+	lastStatus, exists := mcm.lastStatus[clusterID]
+	
+	// 상태 변화가 있는 경우에만 이벤트 생성
+	if exists && lastStatus != currentStatus {
+		var eventType, message string
+		
+		if currentStatus == "failure" {
+			eventType = "critical"
+			message = fmt.Sprintf("🔴 %s is DOWN - No ready nodes available", clusterName)
+			log.Printf("[ALERT] %s", message)
+		} else if currentStatus == "ready" && lastStatus == "failure" {
+			// Ready 노드 개수 계산
+			readyCount := 0
+			for _, node := range nodes {
+				if node.Status == "Ready" {
+					readyCount++
+				}
+			}
+			
+			eventType = "success"
+			if readyCount == len(nodes) {
+				message = fmt.Sprintf("✅ %s RECOVERED - All %d nodes are ready", clusterName, len(nodes))
+			} else {
+				message = fmt.Sprintf("✅ %s RECOVERED - %d/%d nodes are ready", clusterName, readyCount, len(nodes))
+			}
+			log.Printf("[INFO] %s", message)
+		}
+		
+		if message != "" {
+			mcm.eventLog.AddEvent(eventType, message)
+		}
+	}
+	
+	// 현재 상태 저장
+	mcm.lastStatus[clusterID] = currentStatus
+}
+
+// checkNodeStatusChanges 노드별 상태 변화 감지 및 이벤트 생성
+func (mcm *MultiClusterMonitor) checkNodeStatusChanges(clusterID, clusterName string, nodes []NodeInfo) {
+	mcm.mu.Lock()
+	defer mcm.mu.Unlock()
+
+	// 클러스터별 노드 상태 맵이 없으면 생성
+	if mcm.lastNodeStatus[clusterID] == nil {
+		mcm.lastNodeStatus[clusterID] = make(map[string]string)
+	}
+
+	// 각 노드의 상태 변화 확인
+	for _, node := range nodes {
+		lastStatus, exists := mcm.lastNodeStatus[clusterID][node.Name]
+		currentStatus := node.Status
+
+		// 상태 변화가 있는 경우에만 이벤트 생성
+		if exists && lastStatus != currentStatus {
+			var eventType, message string
+
+			if currentStatus == "Ready" && lastStatus != "Ready" {
+				eventType = "success"
+				message = fmt.Sprintf("✅ Node %s in %s is now READY", node.Name, clusterName)
+				log.Printf("[INFO] %s", message)
+			} else if currentStatus != "Ready" && lastStatus == "Ready" {
+				eventType = "critical"
+				message = fmt.Sprintf("🔴 Node %s in %s is now NOT READY", node.Name, clusterName)
+				log.Printf("[ALERT] %s", message)
+			}
+
+			if message != "" {
+				mcm.eventLog.AddEvent(eventType, message)
+			}
+		}
+
+		// 현재 상태 저장
+		mcm.lastNodeStatus[clusterID][node.Name] = currentStatus
+	}
 }
 
 // getClusterInfo 특정 클러스터 정보 조회
@@ -148,18 +237,24 @@ func (mcm *MultiClusterMonitor) getClusterInfo(contextName, id, name, namespace 
 		return info
 	}
 
-	allNodesReady := true
+	// 최소 1개 이상의 노드가 Ready 상태인지 확인
+	readyNodeCount := 0
 	for _, node := range nodes.Items {
 		nodeInfo := mcm.extractNodeInfo(&node)
 		info.Nodes = append(info.Nodes, nodeInfo)
 
-		if nodeInfo.Status != "Ready" {
-			allNodesReady = false
+		if nodeInfo.Status == "Ready" {
+			readyNodeCount++
 		}
 	}
 
-	if !allNodesReady || len(nodes.Items) == 0 {
+	// 노드가 없거나 Ready 노드가 하나도 없으면 failure
+	if len(nodes.Items) == 0 || readyNodeCount == 0 {
 		info.Status = "failure"
+		log.Printf("[%s] Cluster status: FAILURE (Ready nodes: %d/%d)", name, readyNodeCount, len(nodes.Items))
+	} else {
+		info.Status = "ready"
+		log.Printf("[%s] Cluster status: READY (Ready nodes: %d/%d)", name, readyNodeCount, len(nodes.Items))
 	}
 
 	// Pod 목록 조회 (모든 네임스페이스)

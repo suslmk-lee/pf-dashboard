@@ -128,11 +128,7 @@ const TrafficFlow = ({ clusters }) => {
         ))}
 
         {/* GSLB 노드 */}
-        <g 
-          onMouseEnter={() => setShowGslbTooltip(true)}
-          onMouseLeave={() => setShowGslbTooltip(false)}
-          style={{ cursor: 'pointer' }}
-        >
+        <g>
           <circle
             cx={gslbPos.x}
             cy={gslbPos.y}
@@ -159,12 +155,7 @@ const TrafficFlow = ({ clusters }) => {
           const fillColor = isFailure ? '#ef4444' : '#34c759';
 
           return (
-            <g 
-              key={cluster.id}
-              onMouseEnter={() => setShowClusterTooltip(cluster.id)}
-              onMouseLeave={() => setShowClusterTooltip(null)}
-              style={{ cursor: 'pointer' }}
-            >
+            <g key={cluster.id}>
               <circle
                 cx={pos.x}
                 cy={pos.y}

@@ -135,6 +135,13 @@ func (c *GSLBClient) GetGSLBPools() ([]GSLB, error) {
 	}
 
 	log.Printf("[GSLB] Successfully fetched %d GSLBs", len(gslbResp.GslbList))
+	
+	// 각 GSLB의 이름 로그 출력
+	for i, gslb := range gslbResp.GslbList {
+		log.Printf("[GSLB] #%d - Name: '%s', Domain: '%s', ID: '%s'", 
+			i+1, gslb.GslbName, gslb.GslbDomain, gslb.GslbID)
+	}
+	
 	return gslbResp.GslbList, nil
 }
 

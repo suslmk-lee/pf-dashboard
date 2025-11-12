@@ -23,12 +23,13 @@ type TrafficMetrics struct {
 
 // ServiceNode 서비스 노드 정보
 type ServiceNode struct {
-	Name      string `json:"name"`
-	Namespace string `json:"namespace"`
-	Cluster   string `json:"cluster"`
-	Type      string `json:"type"` // deployment, service, pod
-	Replicas  int32  `json:"replicas"`
-	Status    string `json:"status"` // healthy, degraded, failed
+	Name           string `json:"name"`
+	Namespace      string `json:"namespace"`
+	Cluster        string `json:"cluster"`
+	Type           string `json:"type"` // deployment, service, pod
+	Replicas       int32  `json:"replicas"`       // desired replicas
+	ReadyReplicas  int32  `json:"readyReplicas"`  // ready replicas
+	Status         string `json:"status"`         // healthy, degraded, failed
 }
 
 // ServiceEdge 서비스 간 연결 정보
@@ -67,22 +68,42 @@ func (tm *TrafficMonitor) GetServiceGraph(deploymentName, namespace string) (*Se
 	for clusterName, clientset := range tm.clientsets {
 		ctx := context.Background()
 
+		log.Printf("[TrafficMonitor] Querying deployments in namespace '%s' for cluster '%s'", namespace, clusterName)
+
 		// 네임스페이스의 모든 Deployment 조회
 		deployments, err := clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
 		if err != nil {
-			log.Printf("Failed to list deployments in namespace %s, cluster %s: %v", namespace, clusterName, err)
+			log.Printf("[TrafficMonitor] Failed to list deployments in namespace %s, cluster %s: %v", namespace, clusterName, err)
 			continue
 		}
 
+		log.Printf("[TrafficMonitor] Found %d deployments in namespace '%s' for cluster '%s'", len(deployments.Items), namespace, clusterName)
+
 		// 각 Deployment를 노드로 추가 (Pod와 Service는 제외)
 		for _, deployment := range deployments.Items {
+			replicas := int32(0)
+			if deployment.Spec.Replicas != nil {
+				replicas = *deployment.Spec.Replicas
+			}
+			
+			status := getDeploymentStatus(deployment.Status.ReadyReplicas, replicas)
+			
+			// 상태가 failed인 경우 상세 로그
+			if status == "failed" && replicas > 0 {
+				log.Printf("[TrafficMonitor] WARNING: %s in %s is FAILED (ready: %d, desired: %d, available: %d, updated: %d)", 
+					deployment.Name, clusterName, 
+					deployment.Status.ReadyReplicas, replicas,
+					deployment.Status.AvailableReplicas, deployment.Status.UpdatedReplicas)
+			}
+			
 			node := ServiceNode{
-				Name:      deployment.Name,
-				Namespace: deployment.Namespace,
-				Cluster:   clusterName,
-				Type:      "deployment",
-				Replicas:  *deployment.Spec.Replicas,
-				Status:    getDeploymentStatus(deployment.Status.ReadyReplicas, *deployment.Spec.Replicas),
+				Name:          deployment.Name,
+				Namespace:     deployment.Namespace,
+				Cluster:       clusterName,
+				Type:          "deployment",
+				Replicas:      replicas,
+				ReadyReplicas: deployment.Status.ReadyReplicas,
+				Status:        status,
 			}
 			graph.Nodes = append(graph.Nodes, node)
 		}
@@ -108,37 +129,159 @@ func (tm *TrafficMonitor) detectCrossClusterTraffic(graph *ServiceGraph, deploym
 		}
 	}
 
-	// 양방향 크로스 클러스터 트래픽 엣지 추가
-	for _, m1Node := range member1Nodes {
-		for _, m2Node := range member2Nodes {
-			if m1Node.Name == m2Node.Name && m1Node.Namespace == m2Node.Namespace {
-				// Member1 → Member2
-				edge1 := ServiceEdge{
-					Source: fmt.Sprintf("%s-%s-%s", m1Node.Name, m1Node.Namespace, m1Node.Cluster),
-					Target: fmt.Sprintf("%s-%s-%s", m2Node.Name, m2Node.Namespace, m2Node.Cluster),
-					Metrics: TrafficMetrics{
-						SourceWorkload:      m1Node.Name,
-						DestinationWorkload: m2Node.Name,
-						SourceCluster:       "member1",
-						DestinationCluster:  "member2",
-						Protocol:            "istio-eastwest",
-					},
+	// 클러스터 내부 서비스 간 연결 추가
+	// 실제 트래픽 흐름: IngressGateway -> api-gateway -> backend services
+	
+	// api-gateway에서 백엔드 서비스로의 연결
+	backendServices := []string{"data-api-service", "data-collector", "data-processor", "openapi-proxy-api"}
+	
+	// Member1 내부 연결
+	for _, source := range member1Nodes {
+		if source.Name == "api-gateway" {
+			for _, target := range member1Nodes {
+				for _, backendSvc := range backendServices {
+					if target.Name == backendSvc {
+						edge := ServiceEdge{
+							Source: fmt.Sprintf("%s-%s", source.Cluster, source.Name),
+							Target: fmt.Sprintf("%s-%s", target.Cluster, target.Name),
+							Metrics: TrafficMetrics{
+								SourceWorkload:      source.Name,
+								DestinationWorkload: target.Name,
+								SourceCluster:       "member1",
+								DestinationCluster:  "member1",
+								Protocol:            "http",
+							},
+						}
+						graph.Edges = append(graph.Edges, edge)
+					}
 				}
-				graph.Edges = append(graph.Edges, edge1)
+			}
+		}
+	}
 
-				// Member2 → Member1
-				edge2 := ServiceEdge{
-					Source: fmt.Sprintf("%s-%s-%s", m2Node.Name, m2Node.Namespace, m2Node.Cluster),
-					Target: fmt.Sprintf("%s-%s-%s", m1Node.Name, m1Node.Namespace, m1Node.Cluster),
-					Metrics: TrafficMetrics{
-						SourceWorkload:      m2Node.Name,
-						DestinationWorkload: m1Node.Name,
-						SourceCluster:       "member2",
-						DestinationCluster:  "member1",
-						Protocol:            "istio-eastwest",
-					},
+	// Member2 내부 연결
+	for _, source := range member2Nodes {
+		if source.Name == "api-gateway" {
+			for _, target := range member2Nodes {
+				for _, backendSvc := range backendServices {
+					if target.Name == backendSvc {
+						edge := ServiceEdge{
+							Source: fmt.Sprintf("%s-%s", source.Cluster, source.Name),
+							Target: fmt.Sprintf("%s-%s", target.Cluster, target.Name),
+							Metrics: TrafficMetrics{
+								SourceWorkload:      source.Name,
+								DestinationWorkload: target.Name,
+								SourceCluster:       "member2",
+								DestinationCluster:  "member2",
+								Protocol:            "http",
+							},
+						}
+						graph.Edges = append(graph.Edges, edge)
+					}
 				}
-				graph.Edges = append(graph.Edges, edge2)
+			}
+		}
+	}
+
+	// 크로스 클러스터 트래픽: frontend -> data-api-service (양방향)
+	// Member1 frontend -> Member1 EW Gateway -> Member2 EW Gateway -> Member2 data-api-service
+	for _, m1Node := range member1Nodes {
+		if m1Node.Name == "frontend" {
+			for _, m2Node := range member2Nodes {
+				if m2Node.Name == "data-api-service" {
+					// Member1 frontend -> Member1 EW Gateway
+					edge1 := ServiceEdge{
+						Source: fmt.Sprintf("%s-%s", m1Node.Cluster, m1Node.Name),
+						Target: "eastwest-member1",
+						Metrics: TrafficMetrics{
+							SourceWorkload:      m1Node.Name,
+							DestinationWorkload: "eastwest-gateway",
+							SourceCluster:       "member1",
+							DestinationCluster:  "member1",
+							Protocol:            "istio-eastwest",
+						},
+					}
+					graph.Edges = append(graph.Edges, edge1)
+
+					// Member1 EW Gateway -> Member2 EW Gateway
+					edge2 := ServiceEdge{
+						Source: "eastwest-member1",
+						Target: "eastwest-member2",
+						Metrics: TrafficMetrics{
+							SourceWorkload:      "eastwest-gateway",
+							DestinationWorkload: "eastwest-gateway",
+							SourceCluster:       "member1",
+							DestinationCluster:  "member2",
+							Protocol:            "istio-eastwest",
+						},
+					}
+					graph.Edges = append(graph.Edges, edge2)
+
+					// Member2 EW Gateway -> Member2 data-api-service
+					edge3 := ServiceEdge{
+						Source: "eastwest-member2",
+						Target: fmt.Sprintf("%s-%s", m2Node.Cluster, m2Node.Name),
+						Metrics: TrafficMetrics{
+							SourceWorkload:      "eastwest-gateway",
+							DestinationWorkload: m2Node.Name,
+							SourceCluster:       "member2",
+							DestinationCluster:  "member2",
+							Protocol:            "istio-eastwest",
+						},
+					}
+					graph.Edges = append(graph.Edges, edge3)
+				}
+			}
+		}
+	}
+
+	// Member2 frontend -> Member2 EW Gateway -> Member1 EW Gateway -> Member1 data-api-service
+	for _, m2Node := range member2Nodes {
+		if m2Node.Name == "frontend" {
+			for _, m1Node := range member1Nodes {
+				if m1Node.Name == "data-api-service" {
+					// Member2 frontend -> Member2 EW Gateway
+					edge1 := ServiceEdge{
+						Source: fmt.Sprintf("%s-%s", m2Node.Cluster, m2Node.Name),
+						Target: "eastwest-member2",
+						Metrics: TrafficMetrics{
+							SourceWorkload:      m2Node.Name,
+							DestinationWorkload: "eastwest-gateway",
+							SourceCluster:       "member2",
+							DestinationCluster:  "member2",
+							Protocol:            "istio-eastwest",
+						},
+					}
+					graph.Edges = append(graph.Edges, edge1)
+
+					// Member2 EW Gateway -> Member1 EW Gateway
+					edge2 := ServiceEdge{
+						Source: "eastwest-member2",
+						Target: "eastwest-member1",
+						Metrics: TrafficMetrics{
+							SourceWorkload:      "eastwest-gateway",
+							DestinationWorkload: "eastwest-gateway",
+							SourceCluster:       "member2",
+							DestinationCluster:  "member1",
+							Protocol:            "istio-eastwest",
+						},
+					}
+					graph.Edges = append(graph.Edges, edge2)
+
+					// Member1 EW Gateway -> Member1 data-api-service
+					edge3 := ServiceEdge{
+						Source: "eastwest-member1",
+						Target: fmt.Sprintf("%s-%s", m1Node.Cluster, m1Node.Name),
+						Metrics: TrafficMetrics{
+							SourceWorkload:      "eastwest-gateway",
+							DestinationWorkload: m1Node.Name,
+							SourceCluster:       "member1",
+							DestinationCluster:  "member1",
+							Protocol:            "istio-eastwest",
+						},
+					}
+					graph.Edges = append(graph.Edges, edge3)
+				}
 			}
 		}
 	}
@@ -146,6 +289,10 @@ func (tm *TrafficMonitor) detectCrossClusterTraffic(graph *ServiceGraph, deploym
 
 // getDeploymentStatus Deployment 상태 판단
 func getDeploymentStatus(ready, desired int32) string {
+	if desired == 0 {
+		return "healthy" // desired가 0이면 의도적으로 스케일 다운한 것
+	}
+	
 	if ready == 0 {
 		return "failed"
 	} else if ready < desired {
