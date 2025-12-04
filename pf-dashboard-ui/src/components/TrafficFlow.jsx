@@ -166,26 +166,14 @@ const TrafficFlow = ({ clusters }) => {
               />
               <text
                 x={pos.x}
-                y={pos.y - 45}
-                fill="#1d1d1f"
-                fontSize="12"
+                y={pos.y - 50}
+                fill="#333"
+                fontSize="14"
                 fontWeight="600"
                 textAnchor="middle"
               >
                 {cluster.name}
               </text>
-              {!isFailure && (
-                <text
-                  x={pos.x}
-                  y={pos.y + 50}
-                  fill="#666"
-                  fontSize="11"
-                  fontWeight="500"
-                  textAnchor="middle"
-                >
-                  ~{cluster.sessions.toLocaleString()} sessions
-                </text>
-              )}
             </g>
           );
         })}

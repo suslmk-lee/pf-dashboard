@@ -132,11 +132,11 @@ func (mcm *MultiClusterMonitor) checkStatusChange(clusterID, clusterName, curren
 	defer mcm.mu.Unlock()
 
 	lastStatus, exists := mcm.lastStatus[clusterID]
-	
+
 	// 상태 변화가 있는 경우에만 이벤트 생성
 	if exists && lastStatus != currentStatus {
 		var eventType, message string
-		
+
 		if currentStatus == "failure" {
 			eventType = "critical"
 			message = fmt.Sprintf("🔴 %s is DOWN - No ready nodes available", clusterName)
@@ -149,7 +149,7 @@ func (mcm *MultiClusterMonitor) checkStatusChange(clusterID, clusterName, curren
 					readyCount++
 				}
 			}
-			
+
 			eventType = "success"
 			if readyCount == len(nodes) {
 				message = fmt.Sprintf("✅ %s RECOVERED - All %d nodes are ready", clusterName, len(nodes))
@@ -158,12 +158,12 @@ func (mcm *MultiClusterMonitor) checkStatusChange(clusterID, clusterName, curren
 			}
 			log.Printf("[INFO] %s", message)
 		}
-		
+
 		if message != "" {
 			mcm.eventLog.AddEvent(eventType, message)
 		}
 	}
-	
+
 	// 현재 상태 저장
 	mcm.lastStatus[clusterID] = currentStatus
 }
@@ -257,9 +257,9 @@ func (mcm *MultiClusterMonitor) getClusterInfo(contextName, id, name, namespace 
 		log.Printf("[%s] Cluster status: READY (Ready nodes: %d/%d)", name, readyNodeCount, len(nodes.Items))
 	}
 
-	// Pod 목록 조회 (모든 네임스페이스)
-	pods, err := clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
-		LabelSelector: "app=pf-dashboard", // 대시보드 앱 라벨
+	// Pod 목록 조회 (tf-monitor 네임스페이스)
+	pods, err := clientset.CoreV1().Pods("tf-monitor").List(ctx, metav1.ListOptions{
+		// LabelSelector를 제거하여 네임스페이스의 모든 Pod 조회
 	})
 	if err != nil {
 		log.Printf("Failed to list pods in %s: %v", contextName, err)

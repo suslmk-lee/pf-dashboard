@@ -45,8 +45,6 @@ const ClusterCard = ({ cluster }) => {
           </div>
           <div className="flex items-center space-x-2 text-sm text-gray-600">
             <span>Pods: <span className="font-semibold">{cluster.pods}</span></span>
-            <span>•</span>
-            <span>Sessions: <span className="font-semibold">{cluster.sessions.toLocaleString()}</span></span>
           </div>
         </div>
 

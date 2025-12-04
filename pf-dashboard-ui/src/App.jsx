@@ -111,7 +111,7 @@ function App() {
         <TrafficFlow clusters={clusters} />
 
         {/* 트래픽 토폴로지 (Istio Kiali 스타일) */}
-        <TrafficTopology deploymentName="frontend" namespace="default" />
+        <TrafficTopology deploymentName="frontend" namespace="tf-monitor" />
 
         {/* 클러스터 카드 섹션 */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">

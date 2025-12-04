@@ -16,20 +16,20 @@ type TrafficMetrics struct {
 	DestinationWorkload string  `json:"destinationWorkload"`
 	SourceCluster       string  `json:"sourceCluster"`
 	DestinationCluster  string  `json:"destinationCluster"`
-	RequestRate         float64 `json:"requestRate"`  // requests/sec
-	ErrorRate           float64 `json:"errorRate"`    // %
-	Protocol            string  `json:"protocol"`     // http, tcp, grpc
+	RequestRate         float64 `json:"requestRate"` // requests/sec
+	ErrorRate           float64 `json:"errorRate"`   // %
+	Protocol            string  `json:"protocol"`    // http, tcp, grpc
 }
 
 // ServiceNode 서비스 노드 정보
 type ServiceNode struct {
-	Name           string `json:"name"`
-	Namespace      string `json:"namespace"`
-	Cluster        string `json:"cluster"`
-	Type           string `json:"type"` // deployment, service, pod
-	Replicas       int32  `json:"replicas"`       // desired replicas
-	ReadyReplicas  int32  `json:"readyReplicas"`  // ready replicas
-	Status         string `json:"status"`         // healthy, degraded, failed
+	Name          string `json:"name"`
+	Namespace     string `json:"namespace"`
+	Cluster       string `json:"cluster"`
+	Type          string `json:"type"`          // deployment, service, pod
+	Replicas      int32  `json:"replicas"`      // desired replicas
+	ReadyReplicas int32  `json:"readyReplicas"` // ready replicas
+	Status        string `json:"status"`        // healthy, degraded, failed
 }
 
 // ServiceEdge 서비스 간 연결 정보
@@ -41,8 +41,9 @@ type ServiceEdge struct {
 
 // ServiceGraph 서비스 그래프
 type ServiceGraph struct {
-	Nodes []ServiceNode `json:"nodes"`
-	Edges []ServiceEdge `json:"edges"`
+	Nodes         []ServiceNode   `json:"nodes"`
+	Edges         []ServiceEdge   `json:"edges"`
+	ClusterStatus map[string]bool `json:"clusterStatus"` // 클러스터 가용성 상태
 }
 
 // TrafficMonitor 트래픽 모니터링
@@ -60,15 +61,23 @@ func NewTrafficMonitor(clientsets map[string]*kubernetes.Clientset) *TrafficMoni
 // GetServiceGraph 네임스페이스의 Deployment 간 관계 그래프 조회
 func (tm *TrafficMonitor) GetServiceGraph(deploymentName, namespace string) (*ServiceGraph, error) {
 	graph := &ServiceGraph{
-		Nodes: []ServiceNode{},
-		Edges: []ServiceEdge{},
+		Nodes:         []ServiceNode{},
+		Edges:         []ServiceEdge{},
+		ClusterStatus: make(map[string]bool),
 	}
 
 	// 각 클러스터에서 Deployment 정보 수집
 	for clusterName, clientset := range tm.clientsets {
-		ctx := context.Background()
+		// 클러스터별 타임아웃 설정 (10초)
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
 
 		log.Printf("[TrafficMonitor] Querying deployments in namespace '%s' for cluster '%s'", namespace, clusterName)
+
+		// 클러스터 노드 상태 확인 (Ready 노드가 1개라도 있는지)
+		clusterAvailable := tm.checkClusterAvailability(ctx, clientset, clusterName)
+		graph.ClusterStatus[clusterName] = clusterAvailable
+		log.Printf("[TrafficMonitor] Cluster '%s' availability: %v", clusterName, clusterAvailable)
 
 		// 네임스페이스의 모든 Deployment 조회
 		deployments, err := clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
@@ -85,17 +94,24 @@ func (tm *TrafficMonitor) GetServiceGraph(deploymentName, namespace string) (*Se
 			if deployment.Spec.Replicas != nil {
 				replicas = *deployment.Spec.Replicas
 			}
-			
+
 			status := getDeploymentStatus(deployment.Status.ReadyReplicas, replicas)
-			
+
+			log.Printf("[TrafficMonitor] Deployment %s/%s in cluster %s - ready: %d, desired: %d, available: %d, updated: %d, status: %s",
+				deployment.Namespace, deployment.Name, clusterName,
+				deployment.Status.ReadyReplicas, replicas,
+				deployment.Status.AvailableReplicas, deployment.Status.UpdatedReplicas,
+				status,
+			)
+
 			// 상태가 failed인 경우 상세 로그
 			if status == "failed" && replicas > 0 {
-				log.Printf("[TrafficMonitor] WARNING: %s in %s is FAILED (ready: %d, desired: %d, available: %d, updated: %d)", 
-					deployment.Name, clusterName, 
+				log.Printf("[TrafficMonitor] WARNING: %s in %s is FAILED (ready: %d, desired: %d, available: %d, updated: %d)",
+					deployment.Name, clusterName,
 					deployment.Status.ReadyReplicas, replicas,
 					deployment.Status.AvailableReplicas, deployment.Status.UpdatedReplicas)
 			}
-			
+
 			node := ServiceNode{
 				Name:          deployment.Name,
 				Namespace:     deployment.Namespace,
@@ -131,10 +147,10 @@ func (tm *TrafficMonitor) detectCrossClusterTraffic(graph *ServiceGraph, deploym
 
 	// 클러스터 내부 서비스 간 연결 추가
 	// 실제 트래픽 흐름: IngressGateway -> api-gateway -> backend services
-	
+
 	// api-gateway에서 백엔드 서비스로의 연결
 	backendServices := []string{"data-api-service", "data-collector", "data-processor", "openapi-proxy-api"}
-	
+
 	// Member1 내부 연결
 	for _, source := range member1Nodes {
 		if source.Name == "api-gateway" {
@@ -287,12 +303,35 @@ func (tm *TrafficMonitor) detectCrossClusterTraffic(graph *ServiceGraph, deploym
 	}
 }
 
+// checkClusterAvailability 클러스터 가용성 확인 (Ready 노드가 1개라도 있는지)
+func (tm *TrafficMonitor) checkClusterAvailability(ctx context.Context, clientset *kubernetes.Clientset, clusterName string) bool {
+	// 클러스터의 모든 노드 조회
+	nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		log.Printf("[TrafficMonitor] Failed to list nodes for cluster %s: %v", clusterName, err)
+		return false
+	}
+
+	// Ready 상태인 노드가 1개라도 있는지 확인
+	for _, node := range nodes.Items {
+		for _, condition := range node.Status.Conditions {
+			if condition.Type == "Ready" && condition.Status == "True" {
+				log.Printf("[TrafficMonitor] Cluster %s has at least one Ready node: %s", clusterName, node.Name)
+				return true
+			}
+		}
+	}
+
+	log.Printf("[TrafficMonitor] Cluster %s has no Ready nodes (total nodes: %d)", clusterName, len(nodes.Items))
+	return false
+}
+
 // getDeploymentStatus Deployment 상태 판단
 func getDeploymentStatus(ready, desired int32) string {
 	if desired == 0 {
 		return "healthy" // desired가 0이면 의도적으로 스케일 다운한 것
 	}
-	
+
 	if ready == 0 {
 		return "failed"
 	} else if ready < desired {
@@ -319,12 +358,12 @@ func matchesSelector(selector, labels map[string]string) bool {
 func (tm *TrafficMonitor) GetTrafficMetrics(deploymentName, namespace string) ([]TrafficMetrics, error) {
 	// TODO: Prometheus API를 통해 Istio 메트릭 조회
 	// Query: rate(istio_requests_total{destination_workload="deploymentName"}[1m])
-	
+
 	metrics := []TrafficMetrics{}
-	
+
 	// 현재는 더미 데이터 반환
 	log.Printf("Getting traffic metrics for deployment: %s in namespace: %s", deploymentName, namespace)
-	
+
 	return metrics, nil
 }
 

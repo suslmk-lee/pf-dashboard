@@ -156,9 +156,9 @@ func (cm *ClusterMonitor) checkClusters() {
 		namespace = "default"
 	}
 
-	// Pod 목록 조회
+	// Pod 목록 조회 (tf-monitor 네임스페이스의 모든 Pod)
 	pods, err := cm.clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app=pf-dashboard", // 대시보드 앱 라벨
+		// LabelSelector를 제거하여 네임스페이스의 모든 Pod 조회
 	})
 	if err != nil {
 		log.Printf("Failed to list pods: %v", err)
