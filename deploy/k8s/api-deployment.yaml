@@ -20,7 +20,7 @@ spec:
       serviceAccountName: pf-dashboard-api
       containers:
         - name: api
-          image: registry.k-paas.org/plugfest/pf-dashboard-api:v1.0.0
+          image: registry.k-paas.org/plugfest/pf-dashboard-api:v1.0.2
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
