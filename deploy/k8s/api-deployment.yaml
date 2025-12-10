@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pf-dashboard-api
+  namespace: pf-dashboard
+  labels:
+    app: pf-dashboard-api
+    app.kubernetes.io/name: pf-dashboard-api
+    app.kubernetes.io/component: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pf-dashboard-api
+  template:
+    metadata:
+      labels:
+        app: pf-dashboard-api
+    spec:
+      serviceAccountName: pf-dashboard-api
+      containers:
+        - name: api
+          image: registry.k-paas.org/plugfest/pf-dashboard-api:v1.0.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: PORT
+              value: "8080"
+            - name: KUBECONFIG
+              value: "/root/.kube/config"
+            - name: GSLB_API_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: pf-dashboard-api-config
+                  key: GSLB_API_URL
+            - name: GSLB_APP_KEY
+              valueFrom:
+                configMapKeyRef:
+                  name: pf-dashboard-api-config
+                  key: GSLB_APP_KEY
+            - name: GSLB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: pf-dashboard-api-config
+                  key: GSLB_NAME
+          volumeMounts:
+            - name: kubeconfig
+              mountPath: /root/.kube
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: kubeconfig
+          secret:
+            secretName: kubeconfig-secret
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pf-dashboard-api
+  namespace: pf-dashboard
+  labels:
+    app: pf-dashboard-api
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app: pf-dashboard-api

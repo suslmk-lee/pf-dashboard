@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pf-dashboard-api-config
+  namespace: pf-dashboard
+data:
+  # GSLB Configuration
+  GSLB_API_URL: "https://dnsplus.api.nhncloudservice.com"
+  GSLB_APP_KEY: "3sf4wGmIBjrnc1C7"
+  GSLB_NAME: "plugfest-gslb-new"
+  # Cluster contexts
+  MEMBER1_CONTEXT: "karmada-member1-ctx"
+  MEMBER2_CONTEXT: "karmada-member2-ctx"
+  # Monitoring namespace
+  MONITOR_NAMESPACE: "tf-monitor"

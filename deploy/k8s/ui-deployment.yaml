@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pf-dashboard-ui
+  namespace: pf-dashboard
+  labels:
+    app: pf-dashboard-ui
+    app.kubernetes.io/name: pf-dashboard-ui
+    app.kubernetes.io/component: ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pf-dashboard-ui
+  template:
+    metadata:
+      labels:
+        app: pf-dashboard-ui
+    spec:
+      containers:
+        - name: ui
+          image: registry.k-paas.org/plugfest/pf-dashboard-ui:v1.0.1
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+              name: http
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pf-dashboard-ui
+  namespace: pf-dashboard
+  labels:
+    app: pf-dashboard-ui
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
+  selector:
+    app: pf-dashboard-ui
